@@ -15,10 +15,21 @@ from . import config
 
 log = logging.getLogger(__name__)
 GROQ_MAX_RETRIES = 6
+MAX_WAIT_SECONDS = 60  # longer waits (e.g. a daily limit) switch model instead of blocking
+
+_exhausted_until: dict = {}  # model -> time.time() when its rate limit resets
 
 
 class LLMError(RuntimeError):
     """The model backend is unreachable, misconfigured or returned an error."""
+
+
+class _ModelExhausted(LLMError):
+    """This model's quota is used up for longer than we are willing to wait."""
+
+    def __init__(self, model: str, wait: float):
+        super().__init__(f"{model} limit reached")
+        self.model, self.wait = model, wait
 
 
 def complete(messages, *, model=None, json_mode=False, temperature=0.1, images=None) -> str:
@@ -28,7 +39,7 @@ def complete(messages, *, model=None, json_mode=False, temperature=0.1, images=N
     """
     model = model or config.LLM_MODEL
     if config.LLM_PROVIDER == "groq":
-        return _groq(messages, model, json_mode, temperature, images)
+        return _groq_with_fallback(messages, model, json_mode, temperature, images)
     if config.LLM_PROVIDER == "ollama":
         return _ollama(messages, model, json_mode, temperature, images)
     raise LLMError(f"Unknown LLM_PROVIDER '{config.LLM_PROVIDER}' (use 'ollama' or 'groq').")
@@ -119,7 +130,9 @@ def _groq(messages, model, json_mode, temperature, images) -> str:
         if resp.status_code != 429 or attempt == GROQ_MAX_RETRIES:
             break
         delay = _retry_delay(resp)
-        log.info("Groq rate limit hit, waiting %.1fs (attempt %d)", delay, attempt + 1)
+        if delay > MAX_WAIT_SECONDS:  # daily quota: don't block, let the caller switch model
+            raise _ModelExhausted(model, delay)
+        log.info("Groq rate limit hit on %s, waiting %.1fs (attempt %d)", model, delay, attempt + 1)
         time.sleep(delay)
     if resp.status_code == 429:
         raise LLMError("Groq rate limit reached (free plan). Please wait a minute and try again.")
@@ -128,17 +141,38 @@ def _groq(messages, model, json_mode, temperature, images) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
+def _groq_with_fallback(messages, model, json_mode, temperature, images) -> str:
+    """Try the configured model, then GROQ_FALLBACK_MODELS, skipping any whose quota is used up."""
+    candidates = [model] + [m for m in config.GROQ_FALLBACK_MODELS if m != model]
+    soonest = None
+    for name in candidates:
+        if _exhausted_until.get(name, 0) > time.time():
+            soonest = min(soonest or 1e18, _exhausted_until[name])
+            continue
+        try:
+            return _groq(messages, name, json_mode, temperature, images)
+        except _ModelExhausted as exc:
+            _exhausted_until[name] = time.time() + exc.wait
+            soonest = min(soonest or 1e18, _exhausted_until[name])
+            log.warning("Groq quota used up for %s (resets in %.0f min); trying next model", name, exc.wait / 60)
+    minutes = max(1, round(((soonest or time.time()) - time.time()) / 60))
+    raise LLMError(
+        f"The free Groq daily limit is used up for all models. Please try again in about {minutes} minute(s), "
+        "or add a paid Groq plan / another API key."
+    )
+
+
 def _retry_delay(resp) -> float:
-    """Seconds to wait after a 429, from the Retry-After header or 'try again in 1m2.5s'."""
+    """Seconds to wait after a 429, from the Retry-After header or 'try again in 1h2m3.5s'."""
+    m = re.search(r"try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)(ms|s)", resp.text)
+    if m:
+        hours, minutes, amount, unit = m.groups()
+        seconds = int(hours or 0) * 3600 + int(minutes or 0) * 60 + float(amount) / (1000 if unit == "ms" else 1)
+        return seconds + 0.5
     try:
-        return min(float(resp.headers["retry-after"]) + 0.5, 60)
+        return float(resp.headers["retry-after"]) + 0.5
     except (KeyError, ValueError):
-        pass
-    m = re.search(r"try again in (?:(\d+)m)?([\d.]+)(ms|s)", resp.text)
-    if not m:
         return 10
-    seconds = int(m.group(1) or 0) * 60 + float(m.group(2)) / (1000 if m.group(3) == "ms" else 1)
-    return min(seconds + 0.5, 60)
 
 
 def health() -> dict:

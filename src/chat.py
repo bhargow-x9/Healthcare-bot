@@ -23,18 +23,22 @@ EMERGENCY_NOTE = (
 def _analysis_context(analysis: dict) -> str:
     if not analysis:
         return "(No prescription uploaded yet.)"
+
+    def items(key):  # the analysis comes back from the browser, so read it defensively
+        return [i for i in analysis.get(key) or [] if isinstance(i, dict)]
+
     compact = {
         "summary": analysis.get("summary"),
         "medicines": [
             {
-                "as_written": m["details"].get("as_written"),
-                "name": m["name"],
-                **{k: f"{v['text']} {v['sources']}" for k, v in m.items() if isinstance(v, dict) and "text" in v},
+                "as_written": (m.get("details") or {}).get("as_written") if isinstance(m.get("details"), dict) else None,
+                "name": m.get("name"),
+                **{k: f"{v.get('text')} {v.get('sources')}" for k, v in m.items() if isinstance(v, dict) and "text" in v},
             }
-            for m in analysis.get("medicines", [])
+            for m in items("medicines")
         ],
-        "conditions": [c["name"] for c in analysis.get("conditions", [])],
-        "tests": [t["name"] for t in analysis.get("tests", [])],
+        "conditions": [c.get("name") for c in items("conditions")],
+        "tests": [t.get("name") for t in items("tests")],
         "advice": analysis.get("advice"),
     }
     return "PATIENT'S PRESCRIPTION (already explained, with source IDs):\n" + json.dumps(

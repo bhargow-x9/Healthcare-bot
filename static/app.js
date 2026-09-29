@@ -10,7 +10,16 @@ const KIND_LABELS = {
   glossary: "Glossary",
 };
 
-const state = { sessionId: null, sources: {}, file: null, tab: "file", audio: null, voiceQuestion: false };
+const state = {
+  analysis: null, // last analysis result (kept in the browser; the server is stateless)
+  history: [], // chat messages sent back with each question
+  hindiAnalysis: null,
+  sources: {},
+  file: null,
+  tab: "file",
+  audio: null,
+  voiceQuestion: false,
+};
 
 // ---------- helpers ----------
 function esc(value) {
@@ -119,35 +128,66 @@ $("#analyze-btn").addEventListener("click", async () => {
   $("#progress").classList.remove("hidden");
   $("#progress-text").textContent = "Uploading…";
   const started = Date.now();
+  const ticker = setInterval(() => showProgress(null, started), 1000);
   try {
-    const { job_id } = await api("/api/analyze", form, true);
-    const result = await waitForJob(job_id, started);
-    state.sessionId = result.session_id;
+    const res = await fetch("/api/analyze", { method: "POST", body: form });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `Request failed (${res.status})`);
+    }
+    const result = await readAnalysisStream(res, started);
+    state.analysis = result;
+    state.history = [];
+    state.hindiAnalysis = null;
     state.sources = {};
     rememberSources(result.sources);
     renderResults(result);
   } catch (err) {
     showError(err.message);
   } finally {
+    clearInterval(ticker);
     btn.disabled = false;
     $("#progress").classList.add("hidden");
   }
 });
 
-/** Poll the background analysis and show its real progress. */
-async function waitForJob(jobId, started) {
+let lastProgress = { message: "Uploading…", done: 0, total: 0 };
+function showProgress(event, started) {
+  if (event) lastProgress = event;
+  const { message, done, total } = lastProgress;
+  const secs = Math.round((Date.now() - started) / 1000);
+  $("#progress-text").textContent = `${message}${total ? ` (${done}/${total})` : ""} · ${secs}s`;
+  $("#progress-bar").style.width = total ? `${Math.round((100 * done) / total)}%` : "5%";
+}
+
+/** Read the streamed analysis (one JSON event per line) and show its real progress. */
+async function readAnalysisStream(res, started) {
+  lastProgress = { message: "Starting…", done: 0, total: 0 };
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
   for (;;) {
-    await new Promise((r) => setTimeout(r, 1500));
-    const res = await fetch(`/api/analyze/${jobId}`);
-    const job = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(job.error || "Lost track of the analysis. Please try again.");
-    if (job.status === "done") return job.result;
-    if (job.status === "error") throw new Error(job.error);
-    const secs = Math.round((Date.now() - started) / 1000);
-    const count = job.total ? ` (${job.done}/${job.total})` : "";
-    $("#progress-text").textContent = `${job.message}${count} · ${secs}s`;
-    $("#progress-bar").style.width = job.total ? `${Math.round((100 * job.done) / job.total)}%` : "5%";
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = done ? "" : lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      if (event.type === "progress") showProgress(event, started);
+      else if (event.type === "result") return event.result;
+      else if (event.type === "error") throw new Error(event.error);
+    }
+    if (done) break;
   }
+  throw new Error("The connection closed before the result arrived (the server may have hit its time limit). Please try again.");
+}
+
+/** The parts of the analysis the server needs for chat and Hindi (it keeps no sessions). */
+function analysisPayload() {
+  if (!state.analysis) return null;
+  const { summary, medicines, conditions, tests, advice, warnings } = state.analysis;
+  return { summary, medicines, conditions, tests, advice, warnings };
 }
 
 // ---------- results ----------
@@ -260,7 +300,7 @@ function renderResults(r) {
     <p class="disclaimer">${esc(r.disclaimer)}</p>`;
 
   $("#hindi-summary-btn").addEventListener("click", (e) =>
-    speakHindi({ session_id: state.sessionId, target: "analysis" }, e.currentTarget, $("#hindi-summary")));
+    speakHindi({ target: "analysis", analysis: analysisPayload() }, e.currentTarget, $("#hindi-summary")));
   $("#results").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -305,7 +345,9 @@ async function speakHindi(payload, btn, box) {
   btn.disabled = true;
   btn.textContent = "⏳ हिंदी तैयार हो रही है…";
   try {
-    const { hindi } = await api("/api/hindi", payload);
+    const isAnalysis = payload.target === "analysis";
+    const hindi = (isAnalysis && state.hindiAnalysis) || (await api("/api/hindi", payload)).hindi;
+    if (isAnalysis) state.hindiAnalysis = hindi;
     if (box) { box.textContent = hindi; box.classList.remove("hidden"); }
     btn.dataset.playing = "1";
     btn.textContent = "⏹ Stop";
@@ -343,9 +385,15 @@ $("#chat-form").addEventListener("submit", async (e) => {
   addMessage("user", esc(message));
   const pending = addMessage("bot", `<span class="spinner"></span>`);
   try {
-    const r = await api("/api/chat", { session_id: state.sessionId, message });
-    state.sessionId = r.session_id;
-    rememberSources(r.sources);
+    const r = await api("/api/chat", {
+      message,
+      analysis: analysisPayload(),
+      sources: Object.values(state.sources),
+      history: state.history,
+    });
+    state.history.push({ role: "user", content: message }, { role: "assistant", content: r.answer });
+    state.sources = {};
+    rememberSources(r.all_sources);
     if (r.sources.length) renderSources();
     pending.remove();
     if (r.emergency) addMessage("bot", `🚨 ${esc(r.emergency_note)}`, "emergency");

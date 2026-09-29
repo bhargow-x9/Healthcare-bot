@@ -1,7 +1,7 @@
 """Offline tests: Llama and online sources are replaced with fakes."""
 import io
+import json
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -104,31 +104,70 @@ def test_chat_cites_only_known_sources():
     assert chat.answer(session, "I have chest pain")["emergency"]
 
 
-def test_flask_endpoints(monkeypatch):
+def test_groq_switches_model_when_daily_quota_is_used_up(monkeypatch):
+    import importlib
+
+    real_llm = importlib.reload(llm)  # undo the autouse fakes for this module
+    monkeypatch.setattr(real_llm.config, "LLM_PROVIDER", "groq")
+    monkeypatch.setattr(real_llm.config, "GROQ_API_KEY", "test")
+    monkeypatch.setattr(real_llm.config, "GROQ_FALLBACK_MODELS", ["small-model"])
+    calls = []
+
+    class Resp:
+        def __init__(self, status, payload, text=""):
+            self.status_code, self._payload, self.text, self.headers = status, payload, text, {}
+            self.ok = status < 400
+
+        def json(self):
+            return self._payload
+
+    def fake_post(url, json, **kwargs):
+        calls.append(json["model"])
+        if json["model"] == "big-model":
+            return Resp(429, {}, "tokens per day (TPD) ... Please try again in 16m15.8s.")
+        return Resp(200, {"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr(real_llm.requests, "post", fake_post)
+    assert real_llm.complete([{"role": "user", "content": "hi"}], model="big-model") == "ok"
+    assert real_llm.complete([{"role": "user", "content": "hi"}], model="big-model") == "ok"
+    assert calls == ["big-model", "small-model", "small-model"]  # exhausted model is skipped next time
+
+
+def test_registry_round_trips_through_the_browser():
+    _, reg = run()
+    rebuilt = analyzer.SourceRegistry.from_list(list(reversed(reg.to_list())))
+    assert rebuilt.to_list() == reg.to_list()
+
+
+def test_flask_endpoints_are_stateless():
     import app as app_module
 
     client = app_module.app.test_client()
+
     def analyze(**data):
         res = client.post("/api/analyze", data=data, content_type="multipart/form-data")
-        assert res.status_code == 202
-        for _ in range(100):
-            job = client.get(f"/api/analyze/{res.get_json()['job_id']}").get_json()
-            if job["status"] != "running":
-                return job
-            time.sleep(0.05)
-        raise AssertionError("analysis did not finish")
+        assert res.status_code == 200 and res.mimetype == "application/x-ndjson"
+        events = [json.loads(line) for line in res.get_data(as_text=True).splitlines() if line.strip()]
+        assert events[-1]["type"] in ("result", "error")
+        return events
 
-    job = analyze(text=RX)
-    assert job["status"] == "done"
-    body = job["result"]
+    events = analyze(text=RX)
+    assert any(e["type"] == "progress" for e in events)
+    body = events[-1]["result"]
     assert body["medicines"][0]["name"] == "metformin"
 
-    res = client.post("/api/chat", json={"session_id": body["session_id"], "message": "What is it for?"})
-    assert res.status_code == 200 and res.get_json()["sources"][0]["id"] == "S3"
+    # Chat and Hindi get everything from the request (no server session), as on Vercel.
+    context = {"analysis": body, "sources": body["sources"], "history": []}
+    res = client.post("/api/chat", json={**context, "message": "What is it for?"}).get_json()
+    assert res["sources"][0]["id"] == "S3"
+    assert [s["id"] for s in res["all_sources"]] == [s["id"] for s in body["sources"]]
 
-    res = client.post("/api/hindi", json={"session_id": body["session_id"], "target": "analysis"})
+    res = client.post("/api/hindi", json={"target": "analysis", "analysis": body})
     assert res.get_json()["hindi"] == "नमस्ते"
+    # Malformed analysis from a client must not crash the server.
+    assert client.post("/api/hindi", json={"target": "analysis", "analysis": {"medicines": [1, {"x": 2}]}}).status_code == 200
+    assert client.post("/api/chat", json={"message": "hi", "analysis": {"medicines": "bad"}, "sources": ["x"]}).status_code == 200
 
     assert client.post("/api/analyze", data={}).status_code == 400
     bad = analyze(file=(io.BytesIO(b"xx"), "a.exe"))
-    assert bad["status"] == "error" and "Unsupported file type" in bad["error"]
+    assert bad[-1]["type"] == "error" and "Unsupported file type" in bad[-1]["error"]

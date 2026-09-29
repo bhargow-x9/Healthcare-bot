@@ -84,7 +84,18 @@ pip install -r requirements-dev.txt
 python -m pytest -q
 ```
 
-## Deploy (Render, free)
+## Deploy
+The server keeps no sessions: the analysis streams its progress and result in a single request, and the
+browser sends the analysis, sources and chat history back with each follow-up. It therefore works the same
+locally, on Render and on serverless hosts like Vercel.
+
+### Vercel
+1. Import the GitHub repo in Vercel (it detects the Flask `app` in `app.py`).
+2. **Settings → Environment Variables:** add `LLM_PROVIDER=groq`, `GROQ_API_KEY`, `LLM_MODEL=openai/gpt-oss-120b`,
+   `VISION_MODEL=none` and `LLM_PARALLELISM=1`, then redeploy.
+3. **Settings → Functions:** keep **Fluid Compute** on and set **Max Duration** to 300 s, so long prescriptions can finish.
+
+### Render
 The repo includes a [`render.yaml`](render.yaml) blueprint.
 1. Push the repo to GitHub.
 2. On https://render.com choose **New → Blueprint**, pick this repo, and enter your `GROQ_API_KEY` when asked.

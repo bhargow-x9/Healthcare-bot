@@ -1,9 +1,15 @@
-"""MediClear — prescription explainer & health chatbot (Flask)."""
+"""MediClear — prescription explainer & health chatbot (Flask).
+
+Stateless on purpose so it runs the same locally, on Render and on Vercel
+(serverless): the analysis streams its progress and result in one request,
+and the browser sends the analysis/sources/chat history back with each
+follow-up request instead of the server keeping sessions in memory.
+"""
+import json
 import logging
 import os
+import queue
 import threading
-import uuid
-from collections import OrderedDict
 from pathlib import Path
 
 from flask import Flask, Response, jsonify, render_template, request, url_for
@@ -16,35 +22,8 @@ log = logging.getLogger("mediclear")
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = config.MAX_UPLOAD_MB * 1024 * 1024
 
-
-class SessionStore:
-    """In-memory sessions (analysis + sources + chat history). Oldest evicted first."""
-
-    def __init__(self, limit: int):
-        self._data: OrderedDict = OrderedDict()
-        self._limit = limit
-        self._lock = threading.Lock()
-
-    def create(self, analysis=None, registry=None) -> tuple[str, dict]:
-        sid = uuid.uuid4().hex
-        session = {
-            "analysis": analysis,
-            "registry": registry or analyzer.SourceRegistry(),
-            "history": [],
-            "hindi": None,
-        }
-        with self._lock:
-            self._data[sid] = session
-            while len(self._data) > self._limit:
-                self._data.popitem(last=False)
-        return sid, session
-
-    def get(self, sid):
-        with self._lock:
-            return self._data.get(sid)
-
-
-sessions = SessionStore(config.MAX_SESSIONS)
+HEARTBEAT_SECONDS = 5  # keeps the streamed response alive while the model is busy
+MAX_HISTORY_MESSAGES = 12
 
 
 @app.context_processor
@@ -88,15 +67,10 @@ def api_status():
     return jsonify({"llm": llm.health(), "knowledge_base": rag.status(), "online_sources": config.ENABLE_ONLINE_SOURCES})
 
 
-jobs: dict = {}  # job_id -> {status, message, done, total, result | error}
-
-
-def _run_analysis(job_id: str, filename: str, data: bytes | None, typed: str):
-    job = jobs[job_id]
-
+def _analysis_worker(events: queue.Queue, filename: str, data: bytes | None, typed: str):
     def progress(message, done, total):
-        job.update(message=message, done=done, total=total)
-        log.info("[%s] %s (%s/%s)", job_id[:6], message, done, total)
+        events.put({"type": "progress", "message": message, "done": done, "total": total})
+        log.info("%s (%s/%s)", message, done, total)
 
     try:
         if data is not None:
@@ -106,20 +80,20 @@ def _run_analysis(job_id: str, filename: str, data: bytes | None, typed: str):
             extraction = extract.Extraction(typed, "typed text")
         if len(extraction.text.strip()) < 5:
             raise extract.ExtractionError("No readable text was found. Try a clearer photo or type the prescription.")
-        result, registry = analyzer.analyze(extraction, filename, progress)
-        sid, _ = sessions.create(result, registry)
-        result["session_id"] = sid
-        job.update(status="done", result=result)
+        result, _ = analyzer.analyze(extraction, filename, progress)
+        events.put({"type": "result", "result": result})
     except (llm.LLMError, extract.ExtractionError) as exc:
-        job.update(status="error", error=str(exc))
+        events.put({"type": "error", "error": str(exc)})
     except Exception as exc:
         log.exception("Analysis failed")
-        job.update(status="error", error=f"Something went wrong: {exc}")
+        events.put({"type": "error", "error": f"Something went wrong: {exc}"})
+    finally:
+        events.put(None)
 
 
 @app.post("/api/analyze")
 def api_analyze():
-    """Starts the analysis in the background; poll /api/analyze/<job_id> for progress."""
+    """Streams newline-delimited JSON events: progress…, then result or error."""
     upload = request.files.get("file")
     typed = (request.form.get("text") or "").strip()
     if upload and upload.filename:
@@ -129,20 +103,40 @@ def api_analyze():
     else:
         return _error("Upload a file or type the prescription text.", 400)
 
-    job_id = uuid.uuid4().hex
-    jobs[job_id] = {"status": "running", "message": "Starting…", "done": 0, "total": 0}
-    while len(jobs) > config.MAX_SESSIONS:
-        jobs.pop(next(iter(jobs)))
-    threading.Thread(target=_run_analysis, args=(job_id, filename, data, typed), daemon=True).start()
-    return jsonify({"job_id": job_id}), 202
+    events: queue.Queue = queue.Queue()
+    threading.Thread(target=_analysis_worker, args=(events, filename, data, typed), daemon=True).start()
+
+    def stream():
+        while True:
+            try:
+                event = events.get(timeout=HEARTBEAT_SECONDS)
+            except queue.Empty:
+                yield json.dumps({"type": "ping"}) + "\n"
+                continue
+            if event is None:
+                return
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return Response(
+        stream(),
+        mimetype="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
-@app.get("/api/analyze/<job_id>")
-def api_analyze_status(job_id):
-    job = jobs.get(job_id)
-    if not job:
-        return _error("This analysis was not found. Please start again.", 404)
-    return jsonify(job)
+def _client_session(body: dict) -> dict:
+    """Rebuild the chat context the browser sent (analysis, numbered sources, history)."""
+    history = [
+        {"role": h["role"], "content": h["content"][:4000]}
+        for h in (body.get("history") or [])[-MAX_HISTORY_MESSAGES:]
+        if isinstance(h, dict) and h.get("role") in ("user", "assistant") and isinstance(h.get("content"), str)
+    ]
+    analysis = body.get("analysis")
+    return {
+        "registry": analyzer.SourceRegistry.from_list(body.get("sources") or []),
+        "history": history,
+        "analysis": analysis if isinstance(analysis, dict) else None,
+    }
 
 
 @app.post("/api/chat")
@@ -151,25 +145,21 @@ def api_chat():
     message = (body.get("message") or "").strip()
     if not message:
         return _error("Message is empty.", 400)
-    sid = body.get("session_id")
-    session = sessions.get(sid)
-    if session is None:
-        sid, session = sessions.create()
+    session = _client_session(body)
     reply = chat.answer(session, message[:2000])
-    return jsonify({"session_id": sid, **reply})
+    # All sources, including any found for this question, so the browser keeps the numbering.
+    return jsonify({**reply, "all_sources": session["registry"].to_list()})
 
 
 @app.post("/api/hindi")
 def api_hindi():
     """Hindi version of the whole analysis (target=analysis) or of any given text."""
     body = request.get_json(silent=True) or {}
-    session = sessions.get(body.get("session_id"))
     if body.get("target") == "analysis":
-        if not session or not session["analysis"]:
+        analysis = body.get("analysis")
+        if not isinstance(analysis, dict):
             return _error("Analyse a prescription first.", 400)
-        if not session["hindi"]:
-            session["hindi"] = voice.to_hindi(analyzer.speech_script(session["analysis"]))
-        hindi = session["hindi"]
+        hindi = voice.to_hindi(analyzer.speech_script(analysis))
     else:
         text = (body.get("text") or "").strip()
         if not text:
@@ -195,4 +185,4 @@ def api_tts():
 
 if __name__ == "__main__":
     rag.warm_up()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")), debug=False)
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")), debug=False, threaded=True)

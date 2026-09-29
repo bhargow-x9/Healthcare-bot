@@ -30,6 +30,10 @@ MEDICAL_MODEL = os.getenv("MEDICAL_MODEL") or LLM_MODEL
 VISION_MODEL = os.getenv("VISION_MODEL") or (
     "llama3.2-vision" if _is_ollama else "meta-llama/llama-4-scout-17b-16e-instruct"
 )
+# Groq only: models to switch to when the main model's (daily) free quota runs out.
+GROQ_FALLBACK_MODELS = [
+    m.strip() for m in os.getenv("GROQ_FALLBACK_MODELS", "openai/gpt-oss-20b").split(",") if m.strip()
+]
 LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "300"))
 LLM_NUM_CTX = int(os.getenv("LLM_NUM_CTX", "12288"))
 # Ollama processes one request at a time by default; Groq can take several.
@@ -52,4 +56,3 @@ HTTP_TIMEOUT = int(os.getenv("HTTP_TIMEOUT", "15"))
 # --- App limits ---------------------------------------------------------------
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "15"))
 MAX_ITEMS = int(os.getenv("MAX_ITEMS", "12"))
-MAX_SESSIONS = int(os.getenv("MAX_SESSIONS", "200"))

@@ -42,6 +42,28 @@ class SourceRegistry:
             self._keys[key] = src.id
         return self._keys[key]
 
+    @classmethod
+    def from_list(cls, items, limit: int = 400) -> "SourceRegistry":
+        """Rebuild a registry from `to_list()` output sent back by the browser, keeping S1, S2, ... numbering."""
+
+        def number(d):
+            m = re.fullmatch(r"S(\d+)", str(d.get("id", "")))
+            return int(m.group(1)) if m else 10**9
+
+        reg = cls()
+        for d in sorted((d for d in items if isinstance(d, dict)), key=number)[:limit]:
+            reg.add(
+                Source(
+                    kind=str(d.get("kind") or ""),
+                    title=str(d.get("title") or "")[:300],
+                    publisher=str(d.get("publisher") or "")[:300],
+                    location=str(d.get("location") or "")[:300],
+                    excerpt=str(d.get("excerpt") or "")[:4000],
+                    url=str(d["url"])[:1000] if d.get("url") else None,
+                )
+            )
+        return reg
+
     def get(self, sid: str):
         idx = int(sid[1:]) - 1 if re.fullmatch(r"S\d+", sid or "") else -1
         return self._items[idx] if 0 <= idx < len(self._items) else None
@@ -285,16 +307,21 @@ def analyze(extraction: Extraction, filename: str = "typed text", progress=None)
 
 def speech_script(analysis: dict) -> str:
     """English script (no citations) that is translated to Hindi for the voice read-out."""
-    parts = ["Here is a simple explanation of your prescription.", analysis.get("summary", "")]
-    for i, med in enumerate(analysis.get("medicines", []), 1):
-        line = f"Medicine {i}: {med['details'].get('as_written') or med['name']}."
+    # The analysis may come back from the browser, so read it defensively.
+    parts = ["Here is a simple explanation of your prescription.", str(analysis.get("summary") or "")]
+    medicines = [m for m in analysis.get("medicines") or [] if isinstance(m, dict)]
+    for i, med in enumerate(medicines, 1):
+        details = med.get("details") if isinstance(med.get("details"), dict) else {}
+        line = f"Medicine {i}: {details.get('as_written') or med.get('name') or ''}."
         if med.get("plain_name"):
             line += f" It is a {med['plain_name']}."
         for key in ("what_it_is_for", "how_to_take"):
-            if med[key]["verified"]:
-                line += " " + med[key]["text"]
+            field = med.get(key)
+            if isinstance(field, dict) and field.get("verified"):
+                line += " " + str(field.get("text") or "")
         parts.append(line)
-    if analysis.get("warnings"):
-        parts.append("Important: " + " ".join(w["text"] for w in analysis["warnings"]))
+    warnings = [w for w in analysis.get("warnings") or [] if isinstance(w, dict)]
+    if warnings:
+        parts.append("Important: " + " ".join(str(w.get("text") or "") for w in warnings))
     parts.append("Please follow your doctor's instructions, and ask your doctor or pharmacist if you have any doubt.")
     return "\n".join(p for p in parts if p)
