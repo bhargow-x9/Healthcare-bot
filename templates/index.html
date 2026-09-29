@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MediClear – Prescription Explainer</title>
+  <link rel="stylesheet" href="{{ static_url('style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">✚</span> MediClear <small>Prescription explainer</small></div>
+    <div id="status" class="status" aria-live="polite"></div>
+  </header>
+
+  <p class="disclaimer">
+    For understanding only, not medical advice. Always follow your doctor's instructions.
+    Emergency? Call <strong>112</strong> / <strong>108</strong>.
+  </p>
+
+  <main class="layout">
+    <section class="col-left">
+      <div class="card">
+        <h2><span class="step">1</span> Add your prescription</h2>
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="file" role="tab">Photo / PDF / file</button>
+          <button class="tab" data-tab="text" role="tab">Type or paste</button>
+        </div>
+
+        <div id="tab-file" class="tab-panel">
+          <label id="dropzone" class="dropzone">
+            <input id="file" type="file" accept="image/*,.pdf,.docx,.txt" hidden>
+            <span class="drop-icon">📄</span>
+            <span><strong>Drop a photo, scan or PDF here</strong><br><small>or tap to choose – phone camera works too</small></span>
+            <span id="file-name" class="file-name"></span>
+          </label>
+        </div>
+
+        <div id="tab-text" class="tab-panel hidden">
+          <textarea id="rx-text" rows="8" placeholder="Example:&#10;Dx: Type 2 diabetes&#10;Tab Metformin 500 mg 1-0-1 after food x 30 days&#10;Tab Atorvastatin 10 mg 0-0-1&#10;Test: HbA1c after 3 months"></textarea>
+        </div>
+
+        <button id="analyze-btn" class="primary wide">Explain my prescription</button>
+        <div id="progress" class="progress hidden">
+          <div class="progress-row"><span class="spinner"></span><span id="progress-text"></span></div>
+          <div class="progress-track"><div id="progress-bar" class="progress-bar"></div></div>
+          <small>Long prescriptions can take a few minutes on the free Groq plan.</small>
+        </div>
+        <div id="error" class="error hidden" role="alert"></div>
+      </div>
+
+      <div class="card chat-card">
+        <h2><span class="step">2</span> Ask questions</h2>
+        <div id="chat-log" class="chat-log" aria-live="polite">
+          <div class="msg bot">Hi! Upload your prescription above, then ask me anything about it – for example
+            <em>"Can I take this medicine with milk?"</em>. You can also speak in English or Hindi 🎤.</div>
+        </div>
+        <form id="chat-form" class="chat-form">
+          <button type="button" id="mic-btn" class="icon-btn" title="Speak your question">🎤</button>
+          <select id="mic-lang" title="Voice input language">
+            <option value="en-IN">EN</option>
+            <option value="hi-IN">हिं</option>
+          </select>
+          <input id="chat-input" autocomplete="off" placeholder="Ask about your medicines…">
+          <button type="submit" class="primary">Send</button>
+        </form>
+        <label class="toggle"><input type="checkbox" id="auto-hindi"> Read answers aloud in Hindi</label>
+      </div>
+    </section>
+
+    <section id="results" class="col-right">
+      <div class="card empty-state">
+        <div class="empty-icon">🩺</div>
+        <h2>Your simple explanation will appear here</h2>
+        <p>Every point is backed by a numbered source – FDA drug labels, MedlinePlus (U.S. National Library of
+          Medicine), your medical reference books, or your own prescription – so you can check where it came from.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="{{ static_url('app.js') }}"></script>
+</body>
+</html>

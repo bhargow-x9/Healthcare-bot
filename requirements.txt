@@ -1,0 +1,28 @@
+# Web app
+flask>=3.0
+python-dotenv>=1.0
+requests>=2.31
+
+# Reading prescriptions (PDF, scanned PDF, images, Word)
+pypdf>=4.0
+pypdfium2>=4.20
+pillow>=10.0
+python-docx>=1.1
+pytesseract>=0.3.10     # optional OCR fallback – needs the Tesseract program installed
+
+# Hindi voice
+gTTS>=2.5
+
+# Knowledge base (RAG) – same stack as the reference repo
+langchain>=0.3
+langchain-community>=0.3
+langchain-text-splitters>=0.3
+langchain-huggingface>=0.1
+sentence-transformers>=3.0
+faiss-cpu>=1.8
+# Uncomment to use Pinecone instead of local FAISS (VECTOR_STORE=pinecone)
+# langchain-pinecone>=0.2
+# pinecone>=5.0
+
+# Tests
+pytest>=8.0

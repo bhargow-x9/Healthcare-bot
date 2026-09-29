@@ -1,0 +1,28 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Secrets (API keys) - never commit
+.env
+.env.*
+!.env.example
+
+# Generated knowledge-base index and private reference books
+vectorstore/
+data/*.pdf
+
+# Editor / OS / sync junk
+.vscode/
+.idea/
+.claude/
+.tmp.driveupload/
+~$*
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Local sample prescriptions
+Heart_Patient_Prescription.pdf
