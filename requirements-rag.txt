@@ -1,0 +1,11 @@
+# Knowledge base (RAG) – same stack as the reference repo. Needs ~2 GB (PyTorch).
+-r requirements.txt
+langchain>=0.3
+langchain-community>=0.3
+langchain-text-splitters>=0.3
+langchain-huggingface>=0.1
+sentence-transformers>=3.0
+faiss-cpu>=1.8
+# For Pinecone instead of local FAISS (VECTOR_STORE=pinecone)
+# langchain-pinecone>=0.2
+# pinecone>=5.0

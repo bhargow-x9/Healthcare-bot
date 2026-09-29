@@ -1,5 +1,6 @@
-# Web app
+# Core app (enough to run and to deploy on Render)
 flask>=3.0
+gunicorn>=22.0          # production server on Linux hosts (Render)
 python-dotenv>=1.0
 requests>=2.31
 
@@ -13,16 +14,6 @@ pytesseract>=0.3.10     # optional OCR fallback – needs the Tesseract program 
 # Hindi voice
 gTTS>=2.5
 
-# Knowledge base (RAG) – same stack as the reference repo
-langchain>=0.3
-langchain-community>=0.3
-langchain-text-splitters>=0.3
-langchain-huggingface>=0.1
-sentence-transformers>=3.0
-faiss-cpu>=1.8
-# Uncomment to use Pinecone instead of local FAISS (VECTOR_STORE=pinecone)
-# langchain-pinecone>=0.2
-# pinecone>=5.0
-
-# Tests
-pytest>=8.0
+# Optional extras:
+#   pip install -r requirements-rag.txt   -> knowledge base from your own PDF books (heavy: PyTorch)
+#   pip install -r requirements-dev.txt   -> tests

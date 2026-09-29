@@ -64,6 +64,7 @@ while `LLM_MODEL` handles chat and Hindi. Pick a model that follows JSON instruc
 ### 3. (Optional) Add medical reference books
 Put PDFs in `data/` (as in the reference repo), then run:
 ```bash
+pip install -r requirements-rag.txt
 python store_index.py
 ```
 Use `VECTOR_STORE=pinecone` + `PINECONE_API_KEY` to use Pinecone like the reference repo
@@ -79,8 +80,19 @@ sources are ready.
 
 ### Tests
 ```bash
+pip install -r requirements-dev.txt
 python -m pytest -q
 ```
+
+## Deploy (Render, free)
+The repo includes a [`render.yaml`](render.yaml) blueprint.
+1. Push the repo to GitHub.
+2. On https://render.com choose **New → Blueprint**, pick this repo, and enter your `GROQ_API_KEY` when asked.
+3. Render builds it and gives you a public `https://….onrender.com` link.
+
+The free plan sleeps after 15 minutes without visitors, so the first visit after that takes about a minute.
+Anyone with the link uses your Groq key and its rate limits. The knowledge base (RAG) is not installed on
+Render because PyTorch is too large for the free plan. FDA, MedlinePlus and prescription citations still work.
 Tests use a fake Llama and fake sources, so they run offline.
 
 ## Project layout

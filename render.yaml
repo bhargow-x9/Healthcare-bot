@@ -1,0 +1,21 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# One worker on purpose: analysis jobs and chat sessions are kept in memory.
+services:
+  - type: web
+    name: mediclear
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 8 --timeout 300 --bind 0.0.0.0:$PORT
+    healthCheckPath: /api/status
+    envVars:
+      - key: LLM_PROVIDER
+        value: groq
+      - key: LLM_MODEL
+        value: openai/gpt-oss-120b
+      - key: VISION_MODEL
+        value: none
+      - key: LLM_PARALLELISM
+        value: "1"
+      - key: GROQ_API_KEY
+        sync: false   # Render asks you for this secret when you create the service
